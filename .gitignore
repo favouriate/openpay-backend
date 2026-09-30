@@ -30,3 +30,5 @@ Thumbs.db
 
 # Generated Prisma client
 generated/
+
+/generated/prisma

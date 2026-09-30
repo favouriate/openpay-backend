@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum AccountType {
+  CUSTOMER
+  SYSTEM_FEE
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum TransferType {
+  INTERNAL
+  EXTERNAL
+}
+
+enum TransferStatus {
+  PENDING
+  COMPLETED
+  REVERSED
+}
+
+model User {
+  id                 String              @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  email              String              @unique
+  passwordHash       String
+  firstName          String
+  lastName           String
+  status             UserStatus          @default(ACTIVE)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(6)
+  account            Account?
+  refreshSessions    RefreshSession[]
+  idempotencyRecords IdempotencyRecord[]
+}
+
+model Account {
+  id                String        @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  userId            String?       @unique @db.Uuid
+  type              AccountType   @default(CUSTOMER)
+  status            AccountStatus @default(ACTIVE)
+  accountNumber     String?       @unique @db.VarChar(10)
+  balance           Decimal       @default(0) @db.Decimal(19, 2)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(6)
+  user              User?         @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sentTransfers     Transfer[]    @relation("TransferSender")
+  receivedTransfers Transfer[]    @relation("TransferRecipient")
+
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"balance\" >= 0", name: "account_balance_nonnegative")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "(\"type\" = 'CUSTOMER' AND \"userId\" IS NOT NULL AND \"accountNumber\" IS NOT NULL) OR (\"type\" = 'SYSTEM_FEE' AND \"userId\" IS NULL AND \"accountNumber\" IS NULL)", name: "account_owner_type")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"type\" <> 'CUSTOMER' OR (\"accountNumber\" IS NOT NULL AND \"accountNumber\" ~ '^[0-9]{10}$')", name: "customer_account_number_format")
+}
+
+model FinancialInstitution {
+  id         String     @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  code       String     @unique
+  name       String
+  isActive   Boolean    @default(true)
+  isInternal Boolean    @default(false)
+  createdAt  DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime   @updatedAt @db.Timestamptz(6)
+  transfers  Transfer[]
+}
+
+model Transfer {
+  idempotencyRecord        IdempotencyRecord?
+  id                       String                @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  reference                String                @unique
+  type                     TransferType
+  status                   TransferStatus        @default(PENDING)
+  senderAccountId          String                @db.Uuid
+  recipientAccountId       String?               @db.Uuid
+  destinationInstitutionId String?               @db.Uuid
+  destinationAccountNumber String?               @db.VarChar(10)
+  destinationAccountName   String?
+  amount                   Decimal               @db.Decimal(19, 2)
+  feeAmount                Decimal               @default(0) @db.Decimal(19, 2)
+  description              String?
+  createdAt                DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime              @updatedAt @db.Timestamptz(6)
+  completedAt              DateTime?             @db.Timestamptz(6)
+  reversedAt               DateTime?             @db.Timestamptz(6)
+  senderAccount            Account               @relation("TransferSender", fields: [senderAccountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recipientAccount         Account?              @relation("TransferRecipient", fields: [recipientAccountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  destinationInstitution   FinancialInstitution? @relation(fields: [destinationInstitutionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"amount\" > 0", name: "transfer_amount_positive")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"feeAmount\" >= 0", name: "transfer_fee_nonnegative")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"type\" <> 'INTERNAL' OR (\"recipientAccountId\" IS NOT NULL AND \"senderAccountId\" <> \"recipientAccountId\")", name: "transfer_no_internal_self_transfer")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "(\"type\" = 'INTERNAL' AND \"recipientAccountId\" IS NOT NULL AND \"destinationInstitutionId\" IS NULL AND \"destinationAccountNumber\" IS NULL AND \"destinationAccountName\" IS NULL) OR (\"type\" = 'EXTERNAL' AND \"recipientAccountId\" IS NULL AND \"destinationInstitutionId\" IS NOT NULL AND \"destinationAccountNumber\" IS NOT NULL AND \"destinationAccountNumber\" ~ '^[0-9]{10}$' AND \"destinationAccountName\" IS NOT NULL)", name: "transfer_destination_shape")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"type\" <> 'INTERNAL' OR \"feeAmount\" = 0", name: "transfer_internal_fee_zero")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"status\" <> 'COMPLETED' OR \"completedAt\" IS NOT NULL", name: "transfer_completed_timestamp")
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"status\" <> 'REVERSED' OR \"reversedAt\" IS NOT NULL", name: "transfer_reversed_timestamp")
+
+  @@index([senderAccountId, createdAt(sort: Desc)])
+  @@index([recipientAccountId, createdAt(sort: Desc)])
+  @@index([destinationInstitutionId])
+}
+
+model RefreshSession {
+  familyId     String          @db.Uuid
+  usedAt       DateTime?       @db.Timestamptz(6)
+  replacedById String?         @unique @db.Uuid
+  replacedBy   RefreshSession? @relation("RefreshSessionRotation", fields: [replacedById], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  replaces     RefreshSession? @relation("RefreshSessionRotation")
+  id           String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  userId       String          @db.Uuid
+  tokenHash    String          @unique
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  expiresAt    DateTime        @db.Timestamptz(6)
+  revokedAt    DateTime?       @db.Timestamptz(6)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"expiresAt\" > \"createdAt\"", name: "refresh_session_expiry")
+
+  @@index([familyId])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model IdempotencyRecord {
+  transferId         String   @unique @db.Uuid
+  transfer           Transfer @relation(fields: [transferId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id                 String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  userId             String   @db.Uuid
+  key                String
+  requestHash        String
+  responseStatusCode Int
+  responseBody       Json     @db.JsonB
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt          DateTime @db.Timestamptz(6)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // TODO: Enforce this CHECK in a future SQL migration; Prisma 7.10.0 cannot declare it.
+  // @@check(expression: "\"expiresAt\" > \"createdAt\"", name: "idempotency_expiry")
+
+  @@unique([userId, key])
+  @@index([expiresAt])
+}
